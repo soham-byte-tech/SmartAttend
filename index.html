@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartAttend — Secure Attendance Management System</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div id="app"></div>
+
+  <script>
+    let currentUser = null;
+    let authTab = 'login'; // 'login' | 'signup' | 'forgot'
+    let authRole = null;
+    let showPassword = false;
+    let selectedStudentSessionId = null;
+
+    function renderServerNotice() {
+      const app = document.getElementById('app');
+      app.innerHTML = `
+        <main class="min-h-screen flex items-center justify-center p-6 bg-slate-950">
+          <section class="max-w-xl rounded-3xl border border-slate-800 bg-slate-900 p-8 text-center shadow-2xl">
+            <div class="text-4xl mb-4">🛡️</div>
+            <h1 class="text-2xl font-bold text-white">Open SmartAttend through its server</h1>
+            <p class="mt-3 text-sm text-slate-300">This HTML file is open directly. Sign-in, departments, and attendance need the SmartAttend server.</p>
+            <a href="http://localhost:3002/" class="mt-6 inline-block rounded-xl bg-indigo-600 px-5 py-3 text-sm font-semibold text-white hover:bg-indigo-500">Open SmartAttend</a>
+            <p class="mt-4 text-xs text-slate-500">Start the server first, keep its terminal open, then open the link above.</p>
+          </section>
+        </main>`;
+    }
+
+    async function init() {
+      if (window.location.protocol === 'file:') {
+        renderServerNotice();
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/me');
+        if (res.ok) {
+          currentUser = await res.json();
+          renderDashboard();
+        } else {
+          renderAuthPortal();
+        }
+      } catch (e) {
+        renderAuthPortal();
+      }
+    }
+
+    function renderPortalChooser() {
+      const app = document.getElementById('app');
+      app.innerHTML = [
+        '<div class="min-h-screen flex items-center justify-center p-4 sm:p-8 bg-slate-950">',
+        '<div class="w-full max-w-4xl bg-slate-900 border border-slate-800 p-6 sm:p-10 rounded-3xl shadow-2xl">',
+        '<div class="text-center mb-8">',
+        '<div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 border border-indigo-500/30 rounded-full text-indigo-300 text-xs font-semibold">🛡️ ENGINEERING ATTENDANCE DEFENSE SYSTEM</div>',
+        '<h1 class="text-3xl sm:text-4xl font-extrabold text-white mt-4">Welcome to SmartAttend</h1>',
+        '<p class="text-sm text-slate-400 mt-2">Choose the portal for your account</p>',
+        '</div>',
+        '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">',
+        '<button type="button" data-portal-role="STUDENT" class="group text-left p-6 sm:p-8 rounded-2xl border border-slate-700 bg-slate-950 hover:bg-emerald-950/30 hover:border-emerald-500/70 transition-all focus:outline-none focus:ring-2 focus:ring-emerald-500">',
+        '<span class="text-3xl">🎓</span><h2 class="text-xl font-bold text-white mt-4">Student Portal</h2>',
+        '<p class="text-sm text-slate-400 mt-2">Sign in to view attendance or create a student account.</p>',
+        '<span class="inline-block mt-5 text-sm font-semibold text-emerald-400">Continue as Student →</span>',
+        '</button>',
+        '<button type="button" data-portal-role="TEACHER" class="group text-left p-6 sm:p-8 rounded-2xl border border-slate-700 bg-slate-950 hover:bg-indigo-950/30 hover:border-indigo-500/70 transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500">',
+        '<span class="text-3xl">🧑‍🏫</span><h2 class="text-xl font-bold text-white mt-4">Teacher Portal</h2>',
+        '<p class="text-sm text-slate-400 mt-2">Manage assigned classes or create a teacher account.</p>',
+        '<span class="inline-block mt-5 text-sm font-semibold text-indigo-400">Continue as Teacher →</span>',
+        '</button>',
+        '</div>',
+        '<div class="mt-8 pt-6 border-t border-slate-800">',
+        '<p class="text-[11px] text-slate-500 text-center uppercase tracking-wider font-semibold mb-3">Department access</p>',
+        '<div class="grid grid-cols-2 gap-3">',
+        '<button type="button" data-portal-role="HOD" class="py-3 px-4 rounded-xl border border-slate-800 bg-slate-950 text-sm text-slate-300 hover:text-white hover:border-amber-500/60 transition-all">HOD Portal</button>',
+        '<button type="button" data-portal-role="SUPER_ADMIN" class="py-3 px-4 rounded-xl border border-slate-800 bg-slate-950 text-sm text-slate-300 hover:text-white hover:border-rose-500/60 transition-all">Admin Portal</button>',
+        '</div></div></div></div>'
+      ].join('');
+      app.querySelectorAll('[data-portal-role]').forEach(button => {
+        button.addEventListener('click', () => setAuthRole(button.getAttribute('data-portal-role')));
+      });
+    }
+
+    // ---------------- AUTH PORTAL (LOGIN / SIGN-UP / FORGOT) ----------------
+    async function renderAuthPortal(msg = '', isError = true) {
+      if (!authRole) {
+        renderPortalChooser();
+        return;
+      }
+      let deptOptions = '';
+      let departmentLoadError = '';
+      try {
+        const res = await fetch('/api/departments');
+        if (!res.ok) throw new Error('Department request failed');
+        const depts = await res.json();
+        if (!Array.isArray(depts) || depts.length === 0) throw new Error('No departments are configured');
+        deptOptions = '<option value="" disabled selected>Choose your department</option>' +
+          depts.map(d => `<option value="${d.id}">${d.code} — ${d.name}</option>`).join('');
+      } catch (e) {
+        departmentLoadError = 'Departments could not load. Open this site at http://localhost:3002/ and make sure the SmartAttend server is running.';
+        deptOptions = '<option value="" selected>Departments unavailable</option>';
+      }
+
+      const portalLabels = { STUDENT: 'Student', TEACHER: 'Teacher', HOD: 'HOD', SUPER_ADMIN: 'Admin' };
+      const portalName = portalLabels[authRole] || 'Student';
+      const canSignUp = ['STUDENT', 'TEACHER', 'HOD'].includes(authRole);
+      if (!canSignUp && authTab === 'signup') authTab = 'login';
+      const signupTab = canSignUp
+        ? '<button onclick="setAuthTab(\'signup\')" class="flex-1 py-2 rounded-lg transition-all ' + (authTab === 'signup' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white') + '">Sign-Up</button>'
+        : '';
+      const demoAccounts = {
+        STUDENT: ['student_cs1', 'Student@123', 'Student (Aarav)'],
+        TEACHER: ['teacher_cs', 'Teacher@123', 'Teacher (CS)'],
+        HOD: ['hod_comp', 'Hod@123', 'HOD (Comp)'],
+        SUPER_ADMIN: ['admin', 'Admin@123', 'Super Admin']
+      };
+      const demo = demoAccounts[authRole];
+
+      document.getElementById('app').innerHTML = `
+        <div class="min-h-screen flex items-center justify-center p-4 sm:p-6 bg-slate-950">
+          <div class="w-full max-w-lg bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl space-y-6">
+            <button type="button" onclick="setAuthRole('')" class="text-xs text-slate-400 hover:text-white transition-colors">← All portals</button>
+            <!-- Header -->
+            <div class="text-center space-y-1">
+              <div class="inline-flex items-center gap-2 px-3 py-1 bg-indigo-500/10 border border-indigo-500/30 rounded-full text-indigo-400 text-xs font-semibold">
+                🛡️ ENGINEERING ATTENDANCE DEFENSE SYSTEM
+              </div>
+              <h1 class="text-3xl font-extrabold text-white mt-1">SmartAttend</h1>
+              <p class="text-xs text-slate-400">AIDS • Civil • Mechanical • Computer • E&amp;TC</p>
+            </div>
+
+            <!-- Tab Switcher -->
+            <div class="flex bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs font-semibold">
+              <button onclick="setAuthTab('login')" class="flex-1 py-2 rounded-lg transition-all ${authTab === 'login' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}">
+                Sign In
+              </button>
+              ${signupTab}
+              <button onclick="setAuthTab('forgot')" class="flex-1 py-2 rounded-lg transition-all ${authTab === 'forgot' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'}">
+                Forgot Password
+              </button>
+            </div>
+
+            <!-- Message Alert Banner -->
+            ${msg ? `
+              <div class="p-3 text-xs rounded-xl ${isError ? 'bg-rose-950/60 border border-rose-800/60 text-rose-300' : 'bg-emerald-950/60 border border-emerald-800/60 text-emerald-300'} text-center">
+                ${msg}
+              </div>
+            ` : ''}
+
+            <!-- 1. LOGIN TAB -->
+            ${authTab === 'login' ? `
+              <div class="text-center -mt-2">
+                <h2 class="text-lg font-bold text-white">${portalName} Sign In</h2>
+                <p class="text-[11px] text-slate-500">Use your ${portalName.toLowerCase()} account credentials.</p>
+              </div>
+              <form onsubmit="handleLogin(event)" class="space-y-4">
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">${portalName} ID / Username</label>
+                  <input id="login_user" type="text" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white text-sm focus:border-indigo-500 focus:outline-none" placeholder="Enter your ${portalName.toLowerCase()} username">
+                </div>
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">Password</label>
+                  <div class="relative">
+                    <input id="login_pass" type="${showPassword ? 'text' : 'password'}" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white text-sm focus:border-indigo-500 focus:outline-none pr-10" placeholder="••••••••">
+                    <button type="button" onclick="togglePasswordView()" class="absolute right-3 top-3 text-slate-400 hover:text-slate-200 text-xs">
+                      ${showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </div>
+                <button type="submit" class="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition-all shadow-lg shadow-indigo-600/30">
+                  Sign In to ${portalName} Portal
+                </button>
+              </form>
+
+              <!-- Quick Fill Demonstration Credentials -->
+              <div class="pt-4 border-t border-slate-800/80">
+                <span class="text-[11px] text-slate-400 font-semibold block mb-2 text-center uppercase tracking-wider">Demo ${portalName} Account</span>
+                <button onclick="fillLogin('${demo[0]}', '${demo[1]}')" class="w-full p-2 bg-slate-950 hover:bg-slate-800 border border-slate-800/80 rounded-xl text-left">
+                  <div class="font-bold text-indigo-400">${demo[2]}</div>
+                  <div class="text-[10px] text-slate-500">${demo[0]} / ${demo[1]}</div>
+                </button>
+              </div>
+            ` : ''}
+
+            <!-- 2. STUDENT SIGN-UP TAB -->
+            ${authTab === 'signup' ? `
+              <div class="text-center -mt-2">
+                <h2 class="text-lg font-bold text-white">${portalName} Sign Up</h2>
+                <p class="text-[11px] text-slate-500">Create a new ${portalName.toLowerCase()} account.</p>
+              </div>
+              <form onsubmit="handleSignUp(event)" class="space-y-3">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label class="text-xs text-slate-400 block mb-1">${portalName} Full Name</label>
+                    <input id="reg_name" type="text" required placeholder="Enter your full name" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:border-indigo-500 focus:outline-none">
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 block mb-1">Institutional ${portalName} ID</label>
+                    <input id="reg_username" type="text" required placeholder="Enter a unique username" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:border-indigo-500 focus:outline-none">
+                  </div>
+                </div>
+
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">Engineering Department</label>
+                  <select id="reg_dept" required ${departmentLoadError ? 'disabled' : ''} class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:border-indigo-500 focus:outline-none">
+                    ${deptOptions}
+                  </select>
+                  ${departmentLoadError ? `<p class="mt-2 text-xs text-rose-300">${departmentLoadError}</p>` : ''}
+                </div>
+
+                <div id="studentSignupFields" class="${authRole === 'STUDENT' ? 'space-y-3' : 'hidden'}">
+                <div class="grid grid-cols-3 gap-2">
+                  <div>
+                    <label class="text-xs text-slate-400 block mb-1">Academic Year</label>
+                    <select id="reg_year" disabled class="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-white text-xs opacity-80">
+                      <option value="1" selected>Year 1 (FE)</option>
+                      <option value="2">Year 2 (SE)</option>
+                      <option value="3">Year 3 (TE)</option>
+                      <option value="4">Year 4 (BE)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 block mb-1">Semester</label>
+                    <select id="reg_sem" required onchange="syncAcademicYear()" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-white text-xs">
+                      <option value="" selected disabled>Select semester</option>
+                      <option value="1">Sem 1</option>
+                      <option value="2">Sem 2</option>
+                      <option value="3">Sem 3</option>
+                      <option value="4">Sem 4</option>
+                      <option value="5">Sem 5</option>
+                      <option value="6">Sem 6</option>
+                      <option value="7">Sem 7</option>
+                      <option value="8">Sem 8</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label class="text-xs text-slate-400 block mb-1">Division</label>
+                    <select id="reg_div" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-white text-xs">
+                      <option value="A">Div A</option>
+                      <option value="B">Div B</option>
+                      <option value="C">Div C</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">Class Roll Number</label>
+                  <input id="reg_roll" type="number" ${authRole === 'STUDENT' ? 'required' : ''} min="1" max="250" placeholder="e.g. 45" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:border-indigo-500 focus:outline-none">
+                </div>
+                </div>
+
+                <div id="staffSignupNote" class="${authRole === 'STUDENT' ? 'hidden' : 'p-2.5 bg-slate-950 rounded-xl border border-slate-800/80 text-[11px] text-slate-400'}">
+                  ${authRole === 'HOD' ? 'HOD accounts can manage department subjects and teacher assignments.' : 'Teacher accounts can be assigned subjects and divisions by their HOD.'}
+                </div>
+
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">Create Secure Password</label>
+                  <div class="relative">
+                    <input id="reg_pass" type="${showPassword ? 'text' : 'password'}" required placeholder="Min 6 characters" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs focus:border-indigo-500 focus:outline-none pr-10">
+                    <button type="button" onclick="togglePasswordView()" class="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200 text-xs">
+                      ${showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="p-2.5 bg-slate-950 rounded-xl border border-slate-800/80 text-[11px] text-slate-400">
+                  ${authRole === 'STUDENT' ? '🔒 <strong>Anti-Proxy Note:</strong> This device will be automatically fingerprinted and bound to your student account upon first attendance check-in.' : 'Your account will be created for the ' + portalName + ' portal.'}
+                </div>
+
+                <button type="submit" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-emerald-600/30">
+                  Create ${portalName} Account
+                </button>
+              </form>
+            ` : ''}
+
+            <!-- 3. FORGOT PASSWORD TAB -->
+            ${authTab === 'forgot' ? `
+              <div class="space-y-4">
+                <p class="text-xs text-slate-400">
+                  Institutional accounts are secured by audit logging. Enter your username to initiate an administrator-assisted reset token.
+                </p>
+                <div>
+                  <label class="text-xs text-slate-400 block mb-1">Registered Username / ID</label>
+                  <input id="forgot_user" type="text" required placeholder="e.g. student_cs1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-white text-sm focus:border-indigo-500 focus:outline-none">
+                </div>
+                <button onclick="handleForgotPassword()" class="w-full py-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-amber-600/30">
+                  Request Reset Token
+                </button>
+                <div id="resetAssistanceBox" class="hidden p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs space-y-3"></div>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    function setAuthTab(tab) {
+      if (tab === 'signup' && !['STUDENT', 'TEACHER', 'HOD'].includes(authRole)) return;
+      authTab = tab;
+      renderAuthPortal();
+    }
+
+    function setAuthRole(role) {
+      if (role === '') {
+        authRole = null;
+        authTab = 'login';
+        renderAuthPortal();
+        return;
+      }
+      if (!['STUDENT', 'TEACHER', 'HOD', 'SUPER_ADMIN'].includes(role)) return;
+      authRole = role;
+      authTab = 'login';
+      renderAuthPortal();
+    }
+
+    function togglePasswordView() {
+      showPassword = !showPassword;
+      renderAuthPortal();
+    }
+
+    function fillLogin(u, p) {
+      document.getElementById('login_user').value = u;
+      document.getElementById('login_pass').value = p;
+    }
+
+    function syncAcademicYear() {
+      const semester = Number(document.getElementById('reg_sem')?.value);
+      const year = document.getElementById('reg_year');
+      if (Number.isInteger(semester) && year) year.value = String(Math.ceil(semester / 2));
+    }
+
+    // Login Action
+    async function handleLogin(e) {
+      e.preventDefault();
+      const u = document.getElementById('login_user').value;
+      const p = document.getElementById('login_pass').value;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p, role: authRole })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await init();
+        } else {
+          renderAuthPortal(data.error || 'Sign-in failed. Check your details and try again.', true);
+        }
+      } catch (error) {
+        renderAuthPortal('Cannot reach the SmartAttend server. Open http://localhost:3002/ and keep the server running.', true);
+      }
+    }
+
+    // Student Registration Action
+    async function handleSignUp(e) {
+      e.preventDefault();
+      const payload = {
+        role: authRole,
+        name: document.getElementById('reg_name').value,
+        username: document.getElementById('reg_username').value,
+        departmentId: document.getElementById('reg_dept').value,
+        password: document.getElementById('reg_pass').value
+      };
+      if (authRole === 'STUDENT') {
+        payload.semester = document.getElementById('reg_sem').value;
+        payload.academicYear = String(Math.ceil(Number(payload.semester) / 2));
+        payload.division = document.getElementById('reg_div').value;
+        payload.rollNumber = document.getElementById('reg_roll').value;
+      }
+
+      try {
+        const res = await fetch('/api/auth/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await init(); // Successfully registered & automatically signed in!
+        } else {
+          renderAuthPortal(data.error || 'Sign-up failed. Check the form and try again.', true);
+        }
+      } catch (error) {
+        renderAuthPortal('Cannot reach the SmartAttend server. Open http://localhost:3002/ and keep the server running.', true);
+      }
+    }
+
+    // Forgot Password Action
+    async function handleForgotPassword() {
+      const u = document.getElementById('forgot_user').value;
+      if (!u) return alert('Please enter your institutional ID.');
+
+      const res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u })
+      });
+      const data = await res.json();
+      const box = document.getElementById('resetAssistanceBox');
+      box.classList.remove('hidden');
+
+      if (res.ok) {
+        box.innerHTML = `
+          <div class="text-amber-400 font-bold">Recovery Token Generated:</div>
+          <div class="p-2 bg-slate-900 border border-slate-700 font-mono text-center text-lg text-emerald-400 rounded-lg select-all">
+            ${data.temporaryToken}
+          </div>
+          <p class="text-[11px] text-slate-400">Enter this token with your new password below to complete recovery.</p>
+          <div class="space-y-2 pt-2 border-t border-slate-800">
+            <input id="reset_token_input" value="${data.temporaryToken}" type="text" placeholder="Recovery Token" class="w-full bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-lg text-xs text-white">
+            <input id="reset_pass_new" type="password" placeholder="New Password (min 6 chars)" class="w-full bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-lg text-xs text-white">
+            <button onclick="submitNewPassword('${u}')" class="w-full py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-xs font-semibold text-white">
+              Apply New Password
+            </button>
+          </div>
+        `;
+      } else {
+        box.innerHTML = `<span class="text-rose-400">${data.error}</span>`;
+      }
+    }
+
+    async function submitNewPassword(username) {
+      const token = document.getElementById('reset_token_input').value;
+      const newPassword = document.getElementById('reset_pass_new').value;
+
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, token, newPassword })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        authTab = 'login';
+        renderAuthPortal('Password reset successfully! Please sign in with your new password.', false);
+      } else {
+        alert(data.error);
+      }
+    }
+
+    async function logout() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      currentUser = null;
+      authRole = null;
+      authTab = 'login';
+      renderAuthPortal();
+    }
+
+    // ---------------- PANEL ROUTER ----------------
+    function renderDashboard() {
+      if (currentUser.role === 'TEACHER') renderTeacherPanel();
+      else if (currentUser.role === 'STUDENT') renderStudentPanel();
+      else if (currentUser.role === 'HOD') renderHodPanel();
+      else if (currentUser.role === 'SUPER_ADMIN') renderSuperAdminPanel();
+    }
+
+    // ---------------- TEACHER PANEL ----------------
+    let selectedTeacherSessionId = null;
+    let teacherQrTimer = null;
+
+    async function renderTeacherPanel() {
+      const assignmentsRes = await fetch('/api/teacher/assignments');
+      const assignments = assignmentsRes.ok ? await assignmentsRes.json() : [];
+      const selectedAssignment = assignments.find(a => a.sessionId === selectedTeacherSessionId) || assignments.find(a => a.sessionId);
+      if (!selectedAssignment) {
+        document.getElementById('app').innerHTML = '<div class="max-w-4xl mx-auto p-6 space-y-6"><header class="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl"><div><span class="text-xs text-indigo-400 font-semibold uppercase">Faculty Portal</span><h1 class="text-2xl font-bold text-white mt-1">' + escapeHtml(currentUser.name) + '</h1></div><button onclick="logout()" class="px-4 py-2 bg-slate-800 rounded-xl text-xs">Logout</button></header><div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl text-sm text-slate-300">No teaching assignments yet. Ask your HOD to assign you a subject and division.</div></div>';
+        return;
+      }
+      selectedTeacherSessionId = selectedAssignment.sessionId;
+      const sessionId = selectedAssignment.sessionId;
+      const assignmentOptions = assignments.map(a => '<option value="' + a.sessionId + '" ' + (a.sessionId === sessionId ? 'selected' : '') + '>' + escapeHtml(a.subjectCode) + ' · Sem ' + a.semester + ' · Div ' + escapeHtml(a.division) + '</option>').join('');
+      clearTimeout(teacherQrTimer);
+      document.getElementById('app').innerHTML = `
+        <div class="max-w-7xl mx-auto p-6 space-y-6">
+          <header class="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-400 text-xs font-semibold rounded-full border border-indigo-500/30">FACULTY BROADCAST</span>
+                <span class="text-xs text-slate-400">${currentUser.deptName}</span>
+              </div>
+              <h1 class="text-2xl font-bold text-white mt-1">${escapeHtml(currentUser.name)}</h1>
+              <p class="text-xs text-slate-400">Class: Semester ${selectedAssignment.semester}, Division ${selectedAssignment.division}</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <select onchange="selectTeacherAssignment(this.value)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white max-w-xs">${assignmentOptions}</select>
+              <button onclick="logout()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl">Logout</button>
+            </div>
+          </header>
+
+          <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-5 bg-slate-900 border border-slate-800 p-6 rounded-2xl flex flex-col items-center text-center">
+              <div class="flex items-center justify-between w-full mb-4">
+                <span class="text-xs text-emerald-400 font-mono flex items-center gap-2">
+                  <span class="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  HMAC ROTATING TOKEN
+                </span>
+                <span id="qrExpiresTag" class="text-xs font-mono bg-slate-800 px-2 py-1 rounded text-amber-400">15s</span>
+              </div>
+              <div id="qrcodeBox" class="p-4 bg-white rounded-2xl shadow-xl min-h-[250px] min-w-[250px] flex items-center justify-center"></div>
+              <div class="mt-4 px-4 py-2 bg-slate-950 border border-slate-800 rounded-xl w-full">
+                <span class="text-xs text-slate-400 uppercase font-mono">Dynamic Token:</span>
+                <span id="tokenLabel" class="text-lg font-mono font-bold text-indigo-400 ml-2">SYNCING...</span>
+              </div>
+              <p class="text-xs text-slate-500 mt-3">Anti-Proxy Active: Tokens auto-expire every 15 seconds. Relayed screenshots cannot be scanned by off-campus peers.</p>
+            </div>
+
+            <div class="lg:col-span-7 bg-slate-900 border border-slate-800 p-6 rounded-2xl flex flex-col justify-between">
+              <div>
+                <div class="flex justify-between items-center mb-4">
+                  <h2 class="text-lg font-bold text-white">Live Session Attendance</h2>
+                  <button onclick="refreshTeacherRoster()" class="text-xs text-indigo-400 hover:underline">Refresh List</button>
+                </div>
+                <div id="rosterList" class="space-y-2 max-h-[320px] overflow-y-auto pr-1"></div>
+              </div>
+              <div class="pt-4 border-t border-slate-800 flex justify-between items-center text-xs text-slate-400">
+                <span>Subject: ${escapeHtml(selectedAssignment.subjectCode)} ${escapeHtml(selectedAssignment.subjectName)}</span>
+                <span>Semester ${selectedAssignment.semester} · Division ${selectedAssignment.division}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      async function cycleDynamicQR() {
+        try {
+          const res = await fetch('/api/teacher/session-token/' + sessionId);
+          if (!res.ok) return;
+          const data = await res.json();
+          document.getElementById('tokenLabel').innerText = data.token;
+          document.getElementById('qrExpiresTag').innerText = data.expiresIn + 's';
+
+          const qrPayload = JSON.stringify({ sessionId: sessionId, token: data.token, epoch: data.epoch });
+          const box = document.getElementById('qrcodeBox');
+          box.innerHTML = '';
+          new QRCode(box, {
+            text: qrPayload,
+            width: 220,
+            height: 220,
+            colorDark: '#0f172a',
+            colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+          });
+
+          teacherQrTimer = setTimeout(cycleDynamicQR, data.expiresIn * 1000);
+        } catch (e) {}
+      }
+
+      cycleDynamicQR();
+      refreshTeacherRoster();
+    }
+
+    async function selectTeacherAssignment(sessionId) {
+      clearTimeout(teacherQrTimer);
+      selectedTeacherSessionId = sessionId;
+      await renderTeacherPanel();
+    }
+
+    async function refreshTeacherRoster() {
+      if (!selectedTeacherSessionId) return;
+      const res = await fetch('/api/teacher/roster/' + selectedTeacherSessionId);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = document.getElementById('rosterList');
+      list.innerHTML = data.map(item => `
+        <div class="p-3 bg-slate-950/60 border border-slate-800/80 rounded-xl flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg bg-indigo-600/20 text-indigo-400 flex items-center justify-center font-bold text-xs">
+              ${item.rollNo}
+            </div>
+            <div>
+              <div class="text-sm font-semibold text-white">${escapeHtml(item.name)}</div>
+              <div class="text-xs text-slate-500 font-mono">${item.verifiedVia || 'NOT_CHECKED_IN'}</div>
+            </div>
+          </div>
+          <div>
+            ${item.status === 'PRESENT' 
+              ? '<span class="px-2 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-semibold rounded-md">PRESENT</span>'
+              : `<button onclick="manualOverride('${item.studentId}')" class="px-2.5 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-md">Mark In-Person</button>`
+            }
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function manualOverride(studentId) {
+      await fetch('/api/teacher/manual-override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: selectedTeacherSessionId, studentId, status: 'PRESENT', reason: 'Physical teacher verification' })
+      });
+      refreshTeacherRoster();
+    }
+
+    // ---------------- STUDENT PANEL ----------------
+    async function renderStudentPanel() {
+      const res = await fetch('/api/student/metrics');
+      const data = await res.json();
+      selectedStudentSessionId = data.activeSession ? data.activeSession.id : null;
+
+      document.getElementById('app').innerHTML = `
+        <div class="max-w-4xl mx-auto p-6 space-y-6">
+          <header class="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+            <div>
+              <div class="text-xs text-indigo-400 font-semibold uppercase tracking-wider">STUDENT ATTENDANCE TERMINAL</div>
+              <h1 class="text-2xl font-bold text-white">${escapeHtml(data.student.name)}</h1>
+              <p class="text-xs text-slate-400 font-mono">Roll: ${data.student.rollNo} | ${data.student.deptId.toUpperCase()} | Sem ${data.student.sem}</p>
+            </div>
+            <button onclick="logout()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl">Logout</button>
+          </header>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Total Attendance</span>
+              <div class="text-3xl font-extrabold ${data.overallPercentage < 75 ? 'text-rose-400' : 'text-emerald-400'} mt-1">
+                ${data.overallPercentage}%
+              </div>
+              <p class="text-xs text-slate-500 mt-1">Min Threshold: 75.0%</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Attended Ratio</span>
+              <div class="text-3xl font-extrabold text-white mt-1">
+                ${data.totalAttended} <span class="text-sm text-slate-400 font-normal">/ ${data.totalConducted} classes</span>
+              </div>
+              <p class="text-xs text-slate-500 mt-1">Total Aggregate</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Exam Eligibility</span>
+              <div class="text-sm font-bold ${data.isShortage ? 'text-rose-400' : 'text-emerald-400'} mt-2">
+                ${data.isShortage ? '⚠️ SHORTAGE WARNING' : '🛡️ In Good Standing'}
+              </div>
+              <p class="text-xs text-slate-500 mt-1">${data.isShortage ? 'Critical deficit detected' : 'Clearance granted'}</p>
+            </div>
+          </div>
+
+          <div class="bg-indigo-950/20 border border-indigo-900/50 p-6 rounded-2xl space-y-4">
+            <h3 class="font-bold text-white flex items-center gap-2"><span>📷</span> Dynamic Anti-Proxy Scanner Simulation</h3>
+            <p class="text-xs text-slate-400">${data.activeSession ? 'Active class: ' + data.activeSession.division + ' · Semester ' + data.activeSession.semester : 'No active session is available for your division right now.'}</p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label class="text-xs text-slate-400 block mb-1">Paste Dynamic QR Token (from Teacher Screen)</label>
+                <input id="stu_token_input" type="text" placeholder="e.g. 8-char HMAC code" class="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-xl text-white font-mono text-sm">
+              </div>
+              <div>
+                <label class="text-xs text-slate-400 block mb-1">Simulated Physical GPS Location</label>
+                <select id="stu_gps_select" class="w-full bg-slate-950 border border-slate-700 px-3 py-2 rounded-xl text-white text-sm">
+                  <option value="inside">Inside Classroom (18.52055, 73.85635 - Legit)</option>
+                  <option value="spoof">Off-Campus Proxy Spoof (18.58000, 73.91000 - 9km Away)</option>
+                </select>
+              </div>
+            </div>
+            <button onclick="submitStudentAttendance()" ${data.activeSession ? '' : 'disabled'} class="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
+              Submit Attendance Scan
+            </button>
+            <div id="scanResultBox" class="text-xs hidden p-3 rounded-xl"></div>
+          </div>
+
+          <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
+            <h2 class="text-lg font-bold text-white">Subject-Wise Analytics & Target Calculator</h2>
+            <div class="space-y-3">
+              ${data.subjects.map(sub => `
+                <div class="p-4 bg-slate-950 border border-slate-800/80 rounded-xl space-y-2">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <span class="text-xs font-mono text-indigo-400">${escapeHtml(sub.code)}</span>
+                      <h4 class="font-bold text-white">${escapeHtml(sub.name)}</h4>
+                      <div class="text-xs text-slate-400">Attended: ${sub.attended} / ${sub.conducted}</div>
+                    </div>
+                    <div class="text-xl font-extrabold ${sub.percentage < 75 ? 'text-rose-400' : 'text-emerald-400'}">${sub.percentage}%</div>
+                  </div>
+                  <div class="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                    <div class="${sub.percentage < 75 ? 'bg-rose-500' : 'bg-emerald-500'} h-full" style="width: ${sub.percentage}%"></div>
+                  </div>
+                  <div class="p-2.5 rounded-lg text-xs ${sub.isShortage ? 'bg-rose-950/30 text-rose-300 border border-rose-800/40' : 'bg-emerald-950/30 text-emerald-300 border border-emerald-800/40'}">
+                    ${sub.isShortage
+                      ? `⚠️ <strong>Deficit:</strong> You must attend the next <strong>${sub.targetConsecutiveClasses}</strong> consecutive classes to restore 75% attendance.`
+                      : `🛡️ <strong>Safe Margin:</strong> You can miss up to <strong>${sub.safeBufferToMiss}</strong> upcoming classes while staying above 75%.`
+                    }
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    async function submitStudentAttendance() {
+      if (!selectedStudentSessionId) return alert('There is no active session for your class division.');
+      const token = document.getElementById('stu_token_input').value.trim();
+      const gpsType = document.getElementById('stu_gps_select').value;
+      const resBox = document.getElementById('scanResultBox');
+
+      const clientLat = gpsType === 'inside' ? 18.52055 : 18.58000;
+      const clientLng = gpsType === 'inside' ? 73.85635 : 73.91000;
+
+      resBox.className = 'text-xs p-3 rounded-xl block';
+      resBox.innerHTML = 'Evaluating dynamic cryptographic token and physical proximity...';
+
+      const res = await fetch('/api/student/check-in', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionId: selectedStudentSessionId,
+          dynamicToken: token,
+          clientLat,
+          clientLng,
+          deviceFingerprint: 'BROWSER_DEVICE_FINGERPRINT_1'
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        resBox.className = 'text-xs p-3 rounded-xl bg-emerald-950/60 border border-emerald-800/60 text-emerald-300 block';
+        resBox.innerHTML = '✅ ' + data.message + ' (Anti-Proxy Risk Score: ' + data.riskScore + '/100)';
+      } else {
+        resBox.className = 'text-xs p-3 rounded-xl bg-rose-950/60 border border-rose-800/60 text-rose-300 block';
+        resBox.innerHTML = '❌ <strong>' + data.error + '</strong><br>' + (data.violations ? data.violations.join('<br>') : '');
+      }
+    }
+
+    // ---------------- HOD PANEL ----------------
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      }[char]));
+    }
+
+    async function handleCreateSubject(event) {
+      event.preventDefault();
+      const res = await fetch('/api/hod/subjects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: document.getElementById('hod_subject_code').value,
+          name: document.getElementById('hod_subject_name').value,
+          semester: document.getElementById('hod_subject_semester').value
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) return alert(data.error || 'Could not create subject.');
+      await renderHodPanel();
+    }
+
+    async function removeSubject(subjectId) {
+      if (!confirm('Remove this subject? Subjects with attendance history are kept.')) return;
+      const res = await fetch('/api/hod/subjects/' + encodeURIComponent(subjectId), { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) return alert(data.error || 'Could not remove subject.');
+      await renderHodPanel();
+    }
+
+    async function handleCreateAssignment(event) {
+      event.preventDefault();
+      const res = await fetch('/api/hod/assignments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          teacherId: document.getElementById('assignment_teacher').value,
+          subjectId: document.getElementById('assignment_subject').value,
+          division: document.getElementById('assignment_division').value
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) return alert(data.error || 'Could not create teaching assignment.');
+      await renderHodPanel();
+    }
+
+    async function removeAssignment(assignmentId) {
+      if (!confirm('Remove this teaching assignment and stop its live QR session?')) return;
+      const res = await fetch('/api/hod/assignments/' + encodeURIComponent(assignmentId), { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) return alert(data.error || 'Could not remove assignment.');
+      await renderHodPanel();
+    }
+
+    async function renderHodPanel() {
+      const res = await fetch('/api/hod/stats');
+      const data = await res.json();
+
+      document.getElementById('app').innerHTML = `
+        <div class="max-w-7xl mx-auto p-6 space-y-6">
+          <header class="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+            <div>
+              <span class="text-xs text-amber-400 font-semibold uppercase">Department Head Portal</span>
+              <h1 class="text-2xl font-bold text-white">${data.department.name}</h1>
+              <p class="text-xs text-slate-400">Strict Data Boundary: Access restricted to ${data.department.code}</p>
+            </div>
+            <button onclick="logout()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl">Logout</button>
+          </header>
+
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Department Students</span>
+              <div class="text-3xl font-extrabold text-white mt-1">${data.counts.students}</div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Assigned Faculty</span>
+              <div class="text-3xl font-extrabold text-indigo-400 mt-1">${data.counts.teachers}</div>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl">
+              <span class="text-xs text-slate-400">Flagged Proxy Attempts</span>
+              <div class="text-3xl font-extrabold text-rose-400 mt-1">${data.counts.anomalies}</div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <form onsubmit="handleCreateSubject(event)" class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
+              <div>
+                <h2 class="text-lg font-bold text-white">Create a Subject</h2>
+                <p class="text-xs text-slate-400 mt-1">Add a subject to ${data.department.code}.</p>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <input id="hod_subject_code" required maxlength="12" placeholder="Subject code, e.g. CS401" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                <select id="hod_subject_semester" required class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                  <option value="">Semester</option>
+                  <option value="1">Semester 1</option><option value="2">Semester 2</option>
+                  <option value="3">Semester 3</option><option value="4">Semester 4</option>
+                  <option value="5">Semester 5</option><option value="6">Semester 6</option>
+                  <option value="7">Semester 7</option><option value="8">Semester 8</option>
+                </select>
+              </div>
+              <input id="hod_subject_name" required maxlength="100" placeholder="Subject name" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+              <button type="submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-sm font-semibold text-white">Add Subject</button>
+            </form>
+
+            <form onsubmit="handleCreateAssignment(event)" class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
+              <div>
+                <h2 class="text-lg font-bold text-white">Assign a Teacher</h2>
+                <p class="text-xs text-slate-400 mt-1">A teacher can receive multiple subject and division assignments.</p>
+              </div>
+              <select id="assignment_teacher" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                <option value="">Select teacher</option>
+                ${data.teachers.map(t => '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>').join('')}
+              </select>
+              <select id="assignment_subject" required class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                <option value="">Select subject</option>
+                ${data.subjects.map(s => '<option value="' + escapeHtml(s.id) + '">' + escapeHtml(s.code) + ' — ' + escapeHtml(s.name) + ' (Sem ' + s.semester + ')</option>').join('')}
+              </select>
+              <div class="flex items-center gap-3">
+                <select id="assignment_division" required class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white">
+                  <option value="A">Division A</option><option value="B">Division B</option><option value="C">Division C</option>
+                </select>
+                <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-semibold text-white">Assign Teacher</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-3">
+              <h2 class="text-lg font-bold text-white">Department Subjects</h2>
+              ${data.subjects.length ? data.subjects.map(s => '<div class="p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between gap-3"><div><div class="font-semibold text-white">' + escapeHtml(s.code) + ' · Semester ' + s.semester + '</div><div class="text-xs text-slate-400">' + escapeHtml(s.name) + '</div></div><button onclick="removeSubject(\'' + s.id + '\')" class="px-3 py-1.5 bg-rose-950/60 border border-rose-900/50 text-rose-300 rounded-lg text-xs">Remove</button></div>').join('') : '<p class="text-xs text-slate-500">No subjects yet. Add one above.</p>'}
+            </div>
+            <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-3">
+              <h2 class="text-lg font-bold text-white">Teacher Assignments</h2>
+              ${data.teachingAssignments.length ? data.teachingAssignments.map(a => '<div class="p-3 bg-slate-950 border border-slate-800 rounded-xl flex items-center justify-between gap-3"><div><div class="font-semibold text-white">' + escapeHtml(a.teacherName) + ' · ' + escapeHtml(a.subjectCode) + '</div><div class="text-xs text-slate-400">' + escapeHtml(a.subjectName) + ' · Semester ' + a.semester + ' · Division ' + escapeHtml(a.division) + '</div></div><button onclick="removeAssignment(\'' + a.id + '\')" class="px-3 py-1.5 bg-rose-950/60 border border-rose-900/50 text-rose-300 rounded-lg text-xs">Remove</button></div>').join('') : '<p class="text-xs text-slate-500">No teaching assignments yet.</p>'}
+            </div>
+          </div>
+
+          <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4">
+            <h2 class="text-lg font-bold text-white">Department Security Anomalies & Proxy Flags</h2>
+            ${data.anomalies.length === 0 
+              ? '<p class="text-xs text-slate-500">No anomalies detected in your department yet.</p>'
+              : `<div class="space-y-2">
+                  ${data.anomalies.map(a => `
+                    <div class="p-3 bg-slate-950 border border-rose-900/40 rounded-xl flex justify-between items-center text-xs">
+                      <div>
+                        <span class="font-bold text-rose-400">${a.type}</span>
+                        <div class="text-slate-400 font-mono">Student ID: ${a.studentId} | Risk: ${a.score}/100</div>
+                      </div>
+                      <span class="text-slate-500">${new Date(a.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                  `).join('')}
+                </div>`
+            }
+          </div>
+        </div>
+      `;
+    }
+
+    // ---------------- SUPER ADMIN PANEL ----------------
+    async function renderSuperAdminPanel() {
+      const res = await fetch('/api/admin/metrics');
+      const data = await res.json();
+
+      document.getElementById('app').innerHTML = `
+        <div class="max-w-7xl mx-auto p-6 space-y-6">
+          <header class="flex justify-between items-center bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+            <div>
+              <span class="px-2.5 py-0.5 bg-rose-500/20 text-rose-400 text-xs font-semibold rounded-full border border-rose-500/30">SUPER ADMIN ROOT</span>
+              <h1 class="text-2xl font-bold text-white mt-1">SmartAttend Central Governance</h1>
+              <p class="text-xs text-slate-400">5 Engineering Departments Enforced</p>
+            </div>
+            <button onclick="logout()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-xl">Logout</button>
+          </header>
+
+          <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+            ${data.departments.map(d => `
+              <div class="bg-slate-900 border border-slate-800 p-4 rounded-xl">
+                <div class="text-xs font-bold text-indigo-400">${d.code}</div>
+                <div class="text-sm font-semibold text-white mt-1 truncate">${d.name}</div>
+                <div class="text-xs text-slate-400 mt-2">Avg: <span class="text-emerald-400 font-bold">${d.avgAttendance}%</span></div>
+                <div class="text-[10px] text-slate-500">Radius: ${d.radius}m</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+              <h2 class="text-lg font-bold text-white mb-4">Anti-Proxy Security Flags</h2>
+              <div class="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                ${data.anomalies.length === 0 ? '<p class="text-xs text-slate-500">Zero active security threats.</p>' : ''}
+                ${data.anomalies.map(a => `
+                  <div class="p-3 bg-slate-950 border border-rose-900/50 rounded-xl text-xs space-y-1">
+                    <div class="flex justify-between">
+                      <span class="font-bold text-rose-400">${a.type}</span>
+                      <span class="font-mono text-slate-500">${new Date(a.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                    <div class="text-slate-400">Student: ${a.studentId} | Risk Score: ${a.score}/100</div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl">
+              <h2 class="text-lg font-bold text-white mb-4">Immutable Audit Trail</h2>
+              <div class="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                ${data.auditLogs.map(l => `
+                  <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs flex justify-between items-center">
+                    <div>
+                      <div class="font-semibold text-white">${l.action}</div>
+                      <div class="text-[10px] font-mono text-slate-500">Actor: ${l.actorId} | IP: ${l.ip}</div>
+                    </div>
+                    <div class="text-[10px] text-slate-500">${new Date(l.timestamp).toLocaleTimeString()}</div>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Launch App
+    init();
+  </script>
+</body>
+</html>
